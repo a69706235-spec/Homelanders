@@ -17,14 +17,15 @@ if PlayerGui then
     if oldGui then oldGui:Destroy() end
 end
 
--- ГЛОБАЛЬНЫЕ ТЕХНИЧЕСКИЕ ПЕРЕМЕННЫЕ (Перенесены вверх для правильной видимости)
+-- ГЛОБАЛЬНЫЕ ТЕХНИЧЕСКИЕ ПЕРЕМЕННЫЕ
 local bv, bg, activeTrack, boostFlyTrack
 local currentGroundTrack = nil 
+local groundMoveTrack = nil
 local OriginalRootC0 = nil
 local lastCharacter = nil
 local idleTracks, moveTracks = {}, {}
 
--- Переменные и настройки полёта
+-- Переменные и настройки функций
 local Flying = false
 local CrashEnabled = true 
 local ButtonsLocked = false 
@@ -35,6 +36,7 @@ local ShiftLockActive = false
 local BoostActive = false
 local IsBoostingCharging = false
 local SuperJumping = false 
+local CustomAnimEnabled = true -- Включение/выключение анимации ходьбы земли
 
 -- Настройки физического кружения персонажа (Wobble)
 local CharWobbleEnabled = true
@@ -99,13 +101,17 @@ local IdleAnims = {
     "rbxassetid://108926161397507", 
     "rbxassetid://73980801925168"   
 }
+
+-- Анимации исключительно ДЛЯ ПОЛЕТА
 local MoveAnims = {
     "rbxassetid://114833664438028", 
     "rbxassetid://101291673584393",
     "rbxassetid://137006704296145" 
 }
 
-local ScreenGui = Instance.new("ScreenGui")
+-- Анимация исключительно ДЛЯ НАЗЕМНОЙ ХОДЬБЫ/БЕГА
+local GroundAnimId = "rbxassetid://100425249271090"
+
 ScreenGui.Name = "HomelanderProUI"
 ScreenGui.Parent = PlayerGui
 ScreenGui.ResetOnSpawn = false
@@ -127,6 +133,16 @@ local function loadTracks(Hum)
         anim.AnimationId = id
         local success, track = pcall(function() return animator:LoadAnimation(anim) end)
         if success and track then track.Priority = Enum.AnimationPriority.Action; track.Looped = true; moveTracks[i] = track end
+    end
+    
+    -- Загрузка наземной анимации ходьбы
+    local gAnim = Instance.new("Animation")
+    gAnim.AnimationId = GroundAnimId
+    local successG, trackG = pcall(function() return animator:LoadAnimation(gAnim) end)
+    if successG and trackG then
+        trackG.Priority = Enum.AnimationPriority.Action
+        trackG.Looped = true
+        groundMoveTrack = trackG
     end
 end
 
@@ -197,7 +213,7 @@ local function createModernBtn(text, pos, size, isSettingStyle)
     stroke.Parent = btn
     
     btn.InputBegan:Connect(function(input)
-        if ButtonsLocked then return end
+        if ButtonsLocked and text ~= "Lock\nON" and text ~= "Lock\nOFF" then return end
         if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
             local startPos = btn.Position
             local dragStart = input.Position
@@ -237,6 +253,7 @@ local LockBtn        = createModernBtn("Lock\nOFF", UDim2.new(0.35, 0, 0.23, 0))
 local EmoteMenuBtn   = createModernBtn("Emote", UDim2.new(0.41, 0, 0.23, 0))
 local SpeechMenuBtn  = createModernBtn("Speech", UDim2.new(0.47, 0, 0.23, 0))
 local ShiftLockBtn   = createModernBtn("Shift-Lock\nOFF", UDim2.new(0.53, 0, 0.23, 0))
+local CustomAnimBtn  = createModernBtn("G-Anim\nON", UDim2.new(0.59, 0, 0.23, 0))
 
 local UpBtn        = createModernBtn("▲", UDim2.new(0.65, 0, 0.15, 0), UDim2.new(0, 36, 0, 36)) 
 local DownBtn      = createModernBtn("▼", UDim2.new(0.68, 0, 0.15, 0), UDim2.new(0, 36, 0, 36)) 
@@ -247,6 +264,7 @@ LockBtn.Visible = false
 EmoteMenuBtn.Visible = false
 SpeechMenuBtn.Visible = false
 ShiftLockBtn.Visible = false
+CustomAnimBtn.Visible = false
 
 local WobblePanel = Instance.new("Frame", ScreenGui)
 WobblePanel.Size = UDim2.new(0, 165, 0, 48)
@@ -266,6 +284,7 @@ WobbleAmpBtn.Parent = WobblePanel
 local speedLevels = {1, 2, 5, 10, 15, 20, 25, 30, 35, 40}
 local currentSpdIdx = 1
 WobbleSpdBtn.MouseButton1Click:Connect(function()
+    if ButtonsLocked then return end
     currentSpdIdx = (currentSpdIdx % #speedLevels) + 1
     CharWobbleSpeed = speedLevels[currentSpdIdx]
     WobbleSpdBtn.Text = "Wobble Spd\nx" .. CharWobbleSpeed
@@ -274,6 +293,7 @@ end)
 local ampLevels = {1, 2, 5, 10, 15, 20, 25, 30, 35, 40}
 local currentAmpIdx = 1
 WobbleAmpBtn.MouseButton1Click:Connect(function()
+    if ButtonsLocked then return end
     currentAmpIdx = (currentAmpIdx % #ampLevels) + 1
     CharWobbleAmplitude = ampLevels[currentAmpIdx]
     WobbleAmpBtn.Text = "Wobble Amp\nx" .. CharWobbleAmplitude
@@ -289,6 +309,7 @@ for i, data in ipairs(EmoteData) do
     local eBtn = createModernBtn(data[1], UDim2.new(0, (i-1)*40, 0, 0), UDim2.new(0, 38, 0, 38))
     eBtn.Parent = EmoteContainer
     eBtn.MouseButton1Click:Connect(function()
+        if ButtonsLocked then return end
         local Char = Player.Character
         local Hum = Char and Char:FindFirstChildOfClass("Humanoid")
         local animator = Hum and (Hum:FindFirstChildOfClass("Animator") or Hum:WaitForChild("Animator", 2))
@@ -316,6 +337,7 @@ for i, data in ipairs(SpeechData) do
     local sBtn = createModernBtn(data[1], UDim2.new(0, col * 55, 0, row * 42), UDim2.new(0, 52, 0, 38))
     sBtn.Parent = SpeechContainer
     sBtn.MouseButton1Click:Connect(function() 
+        if ButtonsLocked then return end
         sendToChat(data[2]) 
         
         local Char = Player.Character
@@ -341,6 +363,7 @@ for i, data in ipairs(SpeechData) do
 end
 
 SettingsBtn.MouseButton1Click:Connect(function()
+    if ButtonsLocked then return end
     local targetVisibility = not LookBtn.Visible
     WobbleMenuBtn.Visible = targetVisibility
     LookBtn.Visible = targetVisibility
@@ -348,6 +371,7 @@ SettingsBtn.MouseButton1Click:Connect(function()
     EmoteMenuBtn.Visible = targetVisibility
     SpeechMenuBtn.Visible = targetVisibility
     ShiftLockBtn.Visible = targetVisibility
+    CustomAnimBtn.Visible = targetVisibility
     if not targetVisibility then 
         WobblePanel.Visible = false
         EmoteContainer.Visible = false 
@@ -355,6 +379,7 @@ SettingsBtn.MouseButton1Click:Connect(function()
     end
 end)
 
+-- Единственная кнопка, которая ВСЕГДА должна работать, чтобы снять блок
 LockBtn.MouseButton1Click:Connect(function()
     ButtonsLocked = not ButtonsLocked
     LockBtn.Text = ButtonsLocked and "Lock\nON" or "Lock\nOFF"
@@ -362,33 +387,46 @@ LockBtn.MouseButton1Click:Connect(function()
 end)
 
 LookBtn.MouseButton1Click:Connect(function()
+    if ButtonsLocked then return end
     LookWithCamera = not LookWithCamera
     LookBtn.Text = LookWithCamera and "Camera-Lock\nON" or "Camera-Lock\nOFF"
     LookBtn.BackgroundColor3 = LookWithCamera and Color3.fromRGB(20, 20, 20) or Color3.fromRGB(150, 0, 0)
 end)
 
 ShiftLockBtn.MouseButton1Click:Connect(function()
+    if ButtonsLocked then return end
     ShiftLockActive = not ShiftLockActive
     ShiftLockBtn.Text = ShiftLockActive and "Shift-Lock\nON" or "Shift-Lock\nOFF"
     ShiftLockBtn.BackgroundColor3 = ShiftLockActive and Color3.fromRGB(0, 150, 0) or Color3.fromRGB(20, 20, 20)
 end)
 
+CustomAnimBtn.MouseButton1Click:Connect(function()
+    if ButtonsLocked then return end
+    CustomAnimEnabled = not CustomAnimEnabled
+    CustomAnimBtn.Text = CustomAnimEnabled and "G-Anim\nON" or "G-Anim\nOFF"
+    CustomAnimBtn.BackgroundColor3 = CustomAnimEnabled and Color3.fromRGB(20, 20, 20) or Color3.fromRGB(150, 0, 0)
+end)
+
 WobbleMenuBtn.MouseButton1Click:Connect(function()
+    if ButtonsLocked then return end
     WobblePanel.Visible = not WobblePanel.Visible
     if WobblePanel.Visible then EmoteContainer.Visible = false; SpeechContainer.Visible = false end
 end)
 
 WobbleToggleBtn.MouseButton1Click:Connect(function()
+    if ButtonsLocked then return end
     CharWobbleEnabled = not CharWobbleEnabled
     WobbleToggleBtn.Text = CharWobbleEnabled and "Wobble\nON" or "Wobble\nOFF"
     WobbleToggleBtn.BackgroundColor3 = CharWobbleEnabled and Color3.fromRGB(20, 20, 20) or Color3.fromRGB(150, 0, 0)
 end)
 
 EmoteMenuBtn.MouseButton1Click:Connect(function() 
+    if ButtonsLocked then return end
     EmoteContainer.Visible = not EmoteContainer.Visible 
     if EmoteContainer.Visible then WobblePanel.Visible = false; SpeechContainer.Visible = false end
 end)
 SpeechMenuBtn.MouseButton1Click:Connect(function() 
+    if ButtonsLocked then return end
     SpeechContainer.Visible = not SpeechContainer.Visible 
     if SpeechContainer.Visible then WobblePanel.Visible = false; EmoteContainer.Visible = false end
 end)
@@ -664,7 +702,10 @@ local function toggleLasers()
     end
 end
 
-LaserBtn.MouseButton1Click:Connect(toggleLasers)
+LaserBtn.MouseButton1Click:Connect(function()
+    if ButtonsLocked then return end
+    toggleLasers()
+end)
 
 function StopFlying()
     if WobblePanel.Visible then WobblePanel.Visible = false end
@@ -697,7 +738,7 @@ function StopFlying()
     if activeTrack then activeTrack:Stop(0.6) activeTrack = nil end 
     if boostFlyTrack then boostFlyTrack:Stop(0.3) boostFlyTrack = nil end
     if bv then bv:Destroy() bv = nil end
-    if bg then bg:Destroy() bg = nil end -- ФИКС: Обязательно зануляем ссылку
+    if bg then bg:Destroy() bg = nil end
     if wasMovingInFlight then
         wasMovingInFlight = false
         Camera.CameraType = savedCameraType
@@ -1234,6 +1275,7 @@ function StartSpeedFlying()
 end
 
 BoostBtn.MouseButton1Click:Connect(function()
+    if ButtonsLocked then return end
     if not Flying or IsBoostingCharging or BoostActive then return end 
     
     IsBoostingCharging = true
@@ -1283,18 +1325,19 @@ BoostBtn.MouseButton1Click:Connect(function()
     end
 end)
 
-ToggleBtn.MouseButton1Click:Connect(function() if Flying then StopFlying() else StartFlying() end end)
-SpeedFlyBtn.MouseButton1Click:Connect(function() if Flying then StopFlying() else StartSpeedFlying() end end)
-CrashBtn.MouseButton1Click:Connect(function() CrashEnabled = not CrashEnabled; CrashBtn.Text = CrashEnabled and "Ground\nON" or "Ground\nOFF" end)
-PoseBtn.MouseButton1Click:Connect(function() currentIdleIdx = (currentIdleIdx % #IdleAnims) + 1 PoseBtn.Text = "Idle\nV" .. currentIdleIdx end)
-AnimBtn.MouseButton1Click:Connect(function() currentMoveIdx = (currentMoveIdx % 3) + 1; AnimBtn.Text = "Move\nV" .. currentMoveIdx end)
-SpeedBtn.MouseButton1Click:Connect(function() SpeedLevel = (SpeedLevel % 5) + 1; SpeedBtn.Text = "Speed\nLvl " .. SpeedLevel end)
-UpBtn.MouseButton1Down:Connect(function() UpValue = 1 end)
-UpBtn.MouseButton1Up:Connect(function() UpValue = 0 end)
-DownBtn.MouseButton1Down:Connect(function() DownValue = 1 end)
-DownBtn.MouseButton1Up:Connect(function() DownValue = 0 end)
+ToggleBtn.MouseButton1Click:Connect(function() if ButtonsLocked then return end if Flying then StopFlying() else StartFlying() end end)
+SpeedFlyBtn.MouseButton1Click:Connect(function() if ButtonsLocked then return end if Flying then StopFlying() else StartSpeedFlying() end end)
+CrashBtn.MouseButton1Click:Connect(function() if ButtonsLocked then return end CrashEnabled = not CrashEnabled; CrashBtn.Text = CrashEnabled and "Ground\nON" or "Ground\nOFF" end)
+PoseBtn.MouseButton1Click:Connect(function() if ButtonsLocked then return end currentIdleIdx = (currentIdleIdx % #IdleAnims) + 1 PoseBtn.Text = "Idle\nV" .. currentIdleIdx end)
+AnimBtn.MouseButton1Click:Connect(function() if ButtonsLocked then return end currentMoveIdx = (currentMoveIdx % 3) + 1; AnimBtn.Text = "Move\nV" .. currentMoveIdx end)
+SpeedBtn.MouseButton1Click:Connect(function() if ButtonsLocked then return end SpeedLevel = (SpeedLevel % 5) + 1; SpeedBtn.Text = "Speed\nLvl " .. SpeedLevel end)
+UpBtn.MouseButton1Down:Connect(function() if ButtonsLocked then return end UpValue = 1 end)
+UpBtn.MouseButton1Up:Connect(function() if ButtonsLocked then return end UpValue = 0 end)
+DownBtn.MouseButton1Down:Connect(function() if ButtonsLocked then return end DownValue = 1 end)
+DownBtn.MouseButton1Up:Connect(function() if ButtonsLocked then return end DownValue = 0 end)
 
 SuperJumpBtn.MouseButton1Click:Connect(function()
+    if ButtonsLocked then return end
     if SuperJumping then return end
     if Flying then StopFlying() end
     
@@ -1375,7 +1418,7 @@ RunService.Heartbeat:Connect(function(dt)
     local Humanoid = Char:FindFirstChildOfClass("Humanoid")
     if not RootPart or not Humanoid then return end
     
-    -- 1. СИСТЕМА АНТИ-СДВИГА (Защита от флингов / СФ)
+    -- 1. СИСТЕМА АНТИ-СДВИГА
     if not FlingingActive and not IsBoostingCharging and not SuperJumping then
         for _, part in ipairs(Char:GetChildren()) do
             if part:IsA("BasePart") then
@@ -1403,7 +1446,7 @@ RunService.Heartbeat:Connect(function(dt)
         end
     end
     
-    -- 2. СУСТАВНОЙ WOBBLE ЭФФЕКТ (Покачивание торса через RootJoint)
+    -- 2. СУСТАВНОЙ WOBBLE ЭФФЕКТ
     local RootJoint = RootPart:FindFirstChild("RootJoint")
     if CharWobbleEnabled and RootJoint and OriginalRootC0 and (Char == lastCharacter) then
         WobbleTimeCounter = WobbleTimeCounter + (dt * 15 * CharWobbleSpeed)
@@ -1419,9 +1462,9 @@ RunService.Heartbeat:Connect(function(dt)
     end
     
     -- 3. АНИМАЦИЯ ХОДЬБЫ / БЕГА НА ЗЕМЛЕ
-    if not Flying and not SuperJumping and not FlingingActive and not activeEmoteTrack then
+    if not Flying and not SuperJumping and not FlingingActive and not activeEmoteTrack and CustomAnimEnabled then
         if Humanoid.MoveDirection.Magnitude > 0.05 and Humanoid.FloorMaterial ~= Enum.Material.Air then
-            local desiredTrack = moveTracks[currentMoveIdx]
+            local desiredTrack = groundMoveTrack
             if desiredTrack then
                 if currentGroundTrack ~= desiredTrack then
                     if currentGroundTrack then currentGroundTrack:Stop(0.15) end
