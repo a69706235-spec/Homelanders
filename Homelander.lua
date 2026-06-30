@@ -5,27 +5,15 @@ local UserInputService = game:GetService("UserInputService")
 local Camera = workspace.CurrentCamera
 local PlayerGui = Player:WaitForChild("PlayerGui", 5) or Player:FindFirstChildOfClass("PlayerGui")
 
--- ================= НАСТРОЙКА ЗВУКОВ (ВСТАВЬ СВОИ ID СЮДА) =================
 local SOUND_IM_BETTER = "rbxassetid://ВСТАВЬ_СЮДА_ID_ПЕРВОГО_ФАЙЛА"
 local SOUND_YUMMERS   = "rbxassetid://ВСТАВЬ_СЮДА_ID_ВТОРОГО_ФАЙЛА"
 local SOUND_LASERS    = "rbxassetid://ВСТАВЬ_СЮДА_ID_ТРЕТЬЕГО_ФАЙЛА"
--- =========================================================================
 
--- Очистка старого UI
 if PlayerGui then
     local oldGui = PlayerGui:FindFirstChild("HomelanderProUI")
     if oldGui then oldGui:Destroy() end
 end
 
--- ГЛОБАЛЬНЫЕ ТЕХНИЧЕСКИЕ ПЕРЕМЕННЫЕ
-local bv, bg, activeTrack, boostFlyTrack
-local currentGroundTrack = nil 
-local groundMoveTrack = nil
-local OriginalRootC0 = nil
-local lastCharacter = nil
-local idleTracks, moveTracks = {}, {}
-
--- Переменные и настройки функций
 local Flying = false
 local CrashEnabled = true 
 local ButtonsLocked = false 
@@ -35,14 +23,16 @@ local FlingingActive = false
 local ShiftLockActive = false
 local BoostActive = false
 local IsBoostingCharging = false
-local SuperJumping = false 
-local CustomAnimEnabled = true -- Включение/выключение анимации ходьбы земли
 
--- Настройки физического кружения персонажа (Wobble)
+local SpiralActive = false
+local SpiralRadius = 15
+local SpiralRadiusLevels = {5, 10, 15, 20, 30, 50, 100}
+local SpiralRadiusIdx = 3
+local spiralSpeed = 0.65 -- Переменная скорости спирали, настраиваемая из GUI
+
 local CharWobbleEnabled = true
 local CharWobbleSpeed = 1
 local CharWobbleAmplitude = 1
-local WobbleTimeCounter = 0
 
 local SpeedLevel = 1
 local UpValue = 0
@@ -56,7 +46,6 @@ local flightStartTime = 0
 local flingOldRootCFrame = nil
 local flingOldHeadCFrame = nil
 
--- Таблица скоростей
 local SpeedTable = {60, 120, 200, 350, 500} 
 local idleFadeTime = 0.6    
 local idleAnimSpeed = 0.6   
@@ -90,7 +79,6 @@ local LandingHeightOffset = 3.2
 local wasMovingInFlight = false
 local savedCameraType = Enum.CameraType.Custom
 
--- Список анимаций
 local IdleAnims = {
     "rbxassetid://126046533185038",
     "rbxassetid://96251694399659",
@@ -101,67 +89,16 @@ local IdleAnims = {
     "rbxassetid://108926161397507", 
     "rbxassetid://73980801925168"   
 }
-
--- Анимации исключительно ДЛЯ ПОЛЕТА
 local MoveAnims = {
     "rbxassetid://114833664438028", 
     "rbxassetid://101291673584393",
     "rbxassetid://137006704296145" 
 }
 
--- Анимация исключительно ДЛЯ НАЗЕМНОЙ ХОДЬБЫ/БЕГА
-local GroundAnimId = "rbxassetid://100425249271090"
-
+local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "HomelanderProUI"
 ScreenGui.Parent = PlayerGui
 ScreenGui.ResetOnSpawn = false
-
--- Функция безопасной загрузки анимаций через Animator
-local function loadTracks(Hum)
-    idleTracks, moveTracks = {}, {}
-    local animator = Hum:FindFirstChildOfClass("Animator") or Hum:WaitForChild("Animator", 3)
-    if not animator then return end
-
-    for i, id in ipairs(IdleAnims) do
-        local anim = Instance.new("Animation")
-        anim.AnimationId = id
-        local success, track = pcall(function() return animator:LoadAnimation(anim) end)
-        if success and track then track.Priority = Enum.AnimationPriority.Action; track.Looped = true; idleTracks[i] = track end
-    end
-    for i, id in ipairs(MoveAnims) do
-        local anim = Instance.new("Animation")
-        anim.AnimationId = id
-        local success, track = pcall(function() return animator:LoadAnimation(anim) end)
-        if success and track then track.Priority = Enum.AnimationPriority.Action; track.Looped = true; moveTracks[i] = track end
-    end
-    
-    -- Загрузка наземной анимации ходьбы
-    local gAnim = Instance.new("Animation")
-    gAnim.AnimationId = GroundAnimId
-    local successG, trackG = pcall(function() return animator:LoadAnimation(gAnim) end)
-    if successG and trackG then
-        trackG.Priority = Enum.AnimationPriority.Action
-        trackG.Looped = true
-        groundMoveTrack = trackG
-    end
-end
-
-local function updateCharacterSetup(char)
-    if not char then return end
-    lastCharacter = char
-    
-    local rootPart = char:WaitForChild("HumanoidRootPart", 5)
-    if rootPart then
-        local rootJoint = rootPart:WaitForChild("RootJoint", 5)
-        if rootJoint then OriginalRootC0 = rootJoint.C0 end
-    end
-    
-    local hum = char:WaitForChild("Humanoid", 5)
-    if hum then loadTracks(hum) end
-end
-
-if Player.Character then updateCharacterSetup(Player.Character) end
-Player.CharacterAdded:Connect(updateCharacterSetup)
 
 local function stopCurrentEmote()
     if activeEmoteTrack then
@@ -213,7 +150,7 @@ local function createModernBtn(text, pos, size, isSettingStyle)
     stroke.Parent = btn
     
     btn.InputBegan:Connect(function(input)
-        if ButtonsLocked and text ~= "Lock\nON" and text ~= "Lock\nOFF" then return end
+        if ButtonsLocked then return end
         if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
             local startPos = btn.Position
             local dragStart = input.Position
@@ -224,17 +161,14 @@ local function createModernBtn(text, pos, size, isSettingStyle)
                     btn.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
                 end
             end)
-            btn.InputEnded:Connect(function(endInput)
-                if endInput.UserInputType == Enum.UserInputType.MouseButton1 or endInput.UserInputType == Enum.UserInputType.Touch then
-                    if conn then conn:Disconnect() conn = nil end
-                end
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then conn:Disconnect() end
             end)
         end
     end)
     return btn
 end
 
--- КНОПКИ ОСНОВНОЙ ПАНЕЛИ
 local LaserBtn     = createModernBtn("Laser\nOFF", UDim2.new(0.05, 0, 0.15, 0))
 local ToggleBtn    = createModernBtn("Fly\nOFF", UDim2.new(0.11, 0, 0.15, 0))
 local CrashBtn     = createModernBtn("Ground\nON", UDim2.new(0.17, 0, 0.15, 0))
@@ -245,18 +179,18 @@ local SettingsBtn  = createModernBtn("Setting", UDim2.new(0.41, 0, 0.15, 0), nil
 local SuperJumpBtn = createModernBtn("Super\nJump", UDim2.new(0.47, 0, 0.15, 0))
 local SpeedFlyBtn  = createModernBtn("Speed\nFly", UDim2.new(0.53, 0, 0.15, 0)) 
 local BoostBtn     = createModernBtn("Boost\nOFF", UDim2.new(0.59, 0, 0.15, 0))
+local SpiralBtn    = createModernBtn("Spiral\nOFF", UDim2.new(0.65, 0, 0.15, 0))
 
--- КНОПКИ ВНУТРИ НАСТРОЕК
 local WobbleMenuBtn  = createModernBtn("Wobble\nMenu", UDim2.new(0.23, 0, 0.23, 0))   
 local LookBtn        = createModernBtn("Camera-Lock\nON", UDim2.new(0.29, 0, 0.23, 0))
 local LockBtn        = createModernBtn("Lock\nOFF", UDim2.new(0.35, 0, 0.23, 0))
 local EmoteMenuBtn   = createModernBtn("Emote", UDim2.new(0.41, 0, 0.23, 0))
 local SpeechMenuBtn  = createModernBtn("Speech", UDim2.new(0.47, 0, 0.23, 0))
 local ShiftLockBtn   = createModernBtn("Shift-Lock\nOFF", UDim2.new(0.53, 0, 0.23, 0))
-local CustomAnimBtn  = createModernBtn("G-Anim\nON", UDim2.new(0.59, 0, 0.23, 0))
+local SpiralRadiusBtn = createModernBtn("Spiral Rad\n15", UDim2.new(0.59, 0, 0.23, 0))
 
-local UpBtn        = createModernBtn("▲", UDim2.new(0.65, 0, 0.15, 0), UDim2.new(0, 36, 0, 36)) 
-local DownBtn      = createModernBtn("▼", UDim2.new(0.68, 0, 0.15, 0), UDim2.new(0, 36, 0, 36)) 
+local UpBtn        = createModernBtn("▲", UDim2.new(0.72, 0, 0.15, 0), UDim2.new(0, 36, 0, 36)) 
+local DownBtn      = createModernBtn("▼", UDim2.new(0.75, 0, 0.15, 0), UDim2.new(0, 36, 0, 36)) 
 
 WobbleMenuBtn.Visible = false
 LookBtn.Visible = false
@@ -264,7 +198,7 @@ LockBtn.Visible = false
 EmoteMenuBtn.Visible = false
 SpeechMenuBtn.Visible = false
 ShiftLockBtn.Visible = false
-CustomAnimBtn.Visible = false
+SpiralRadiusBtn.Visible = false
 
 local WobblePanel = Instance.new("Frame", ScreenGui)
 WobblePanel.Size = UDim2.new(0, 165, 0, 48)
@@ -281,23 +215,130 @@ WobbleSpdBtn.Parent = WobblePanel
 local WobbleAmpBtn = createModernBtn("Wobble Amp\nx1", UDim2.new(0, 110, 0, 0))
 WobbleAmpBtn.Parent = WobblePanel
 
-local speedLevels = {1, 2, 5, 10, 15, 20, 25, 30, 35, 40}
-local currentSpdIdx = 1
-WobbleSpdBtn.MouseButton1Click:Connect(function()
-    if ButtonsLocked then return end
-    currentSpdIdx = (currentSpdIdx % #speedLevels) + 1
-    CharWobbleSpeed = speedLevels[currentSpdIdx]
-    WobbleSpdBtn.Text = "Wobble Spd\nx" .. CharWobbleSpeed
+----------------------------------------------------------------
+-- ИНТЕГРАЦИЯ: ГЛАВНОЕ ОКНО НАСТРОЕК И МЕНЮ СПИРАЛИ
+----------------------------------------------------------------
+local SettingsFrame = Instance.new("Frame")
+SettingsFrame.Name = "SettingsFrame"
+SettingsFrame.Size = UDim2.new(0, 250, 0, 300)
+SettingsFrame.Position = UDim2.new(0.1, 0, 0.3, 0)
+SettingsFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+SettingsFrame.BorderSizePixel = 0
+SettingsFrame.Active = true
+SettingsFrame.Draggable = true
+SettingsFrame.Visible = false -- Изначально скрыто, управляется через кнопку Setting
+SettingsFrame.Parent = ScreenGui
+
+local SettingsTitle = Instance.new("TextLabel")
+SettingsTitle.Size = UDim2.new(1, 0, 0, 40)
+SettingsTitle.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+SettingsTitle.Text = "НАСТРОЙКИ СПИРАЛИ"
+SettingsTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+SettingsTitle.Font = Enum.Font.SourceSansBold
+SettingsTitle.TextSize = 18
+SettingsTitle.Parent = SettingsFrame
+
+local OpenSpiralButton = Instance.new("TextButton")
+OpenSpiralButton.Name = "OpenSpiralButton"
+OpenSpiralButton.Size = UDim2.new(0, 210, 0, 40)
+OpenSpiralButton.Position = UDim2.new(0, 20, 0, 60)
+OpenSpiralButton.BackgroundColor3 = Color3.fromRGB(0, 120, 215)
+OpenSpiralButton.Text = "Открыть меню Спирали"
+OpenSpiralButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+OpenSpiralButton.Font = Enum.Font.SourceSans
+OpenSpiralButton.TextSize = 16
+OpenSpiralButton.Parent = SettingsFrame
+
+local UICorner_OpenBtn = Instance.new("UICorner")
+UICorner_OpenBtn.CornerRadius = UDim.new(0, 6)
+UICorner_OpenBtn.Parent = OpenSpiralButton
+
+local SpiralMenuFrame = Instance.new("Frame")
+SpiralMenuFrame.Name = "SpiralMenuFrame"
+SpiralMenuFrame.Size = UDim2.new(0, 220, 0, 200)
+SpiralMenuFrame.Position = UDim2.new(0.1, 270, 0, 3) 
+SpiralMenuFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+SpiralMenuFrame.BorderSizePixel = 0
+SpiralMenuFrame.Visible = false 
+SpiralMenuFrame.Active = true
+SpiralMenuFrame.Draggable = true
+SpiralMenuFrame.Parent = SettingsFrame
+
+local SpiralTitle = Instance.new("TextLabel")
+SpiralTitle.Size = UDim2.new(1, 0, 0, 35)
+SpiralTitle.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+SpiralTitle.Text = "Меню Спирали"
+SpiralTitle.TextColor3 = Color3.fromRGB(0, 255, 150)
+SpiralTitle.Font = Enum.Font.SourceSansBold
+SpiralTitle.TextSize = 16
+SpiralTitle.Parent = SpiralMenuFrame
+
+local SpeedTextBox = Instance.new("TextBox")
+SpeedTextBox.Name = "SpeedTextBox"
+SpeedTextBox.Size = UDim2.new(0, 180, 0, 40)
+SpeedTextBox.Position = UDim2.new(0, 20, 0, 70)
+SpeedTextBox.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+SpeedTextBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+SpeedTextBox.Text = tostring(spiralSpeed)
+SpeedTextBox.PlaceholderText = "Введите скорость..."
+SpeedTextBox.Font = Enum.Font.SourceSans
+SpeedTextBox.TextSize = 16
+SpeedTextBox.ClearTextOnFocus = false
+SpeedTextBox.Parent = SpiralMenuFrame
+
+local UICorner_SpeedBox = Instance.new("UICorner")
+UICorner_SpeedBox.CornerRadius = UDim.new(0, 6)
+UICorner_SpeedBox.Parent = SpeedTextBox
+
+local SpeedLabel = Instance.new("TextLabel")
+SpeedLabel.Size = UDim2.new(0, 180, 0, 20)
+SpeedLabel.Position = UDim2.new(0, 20, 0, 45)
+SpeedLabel.BackgroundTransparency = 1
+SpeedLabel.Text = "Настройка скорости:"
+SpeedLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+SpeedLabel.Font = Enum.Font.SourceSans
+SpeedLabel.TextSize = 14
+SpeedLabel.TextXAlignment = Enum.TextXAlignment.Left
+SpeedLabel.Parent = SpiralMenuFrame
+
+local StatusLabel = Instance.new("TextLabel")
+StatusLabel.Size = UDim2.new(0, 180, 0, 30)
+StatusLabel.Position = UDim2.new(0, 20, 0, 130)
+StatusLabel.BackgroundTransparency = 1
+StatusLabel.Text = "Текущая скорость: " .. spiralSpeed
+StatusLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
+StatusLabel.Font = Enum.Font.SourceSansItalic
+StatusLabel.TextSize = 14
+StatusLabel.Parent = SpiralMenuFrame
+
+OpenSpiralButton.MouseButton1Click:Connect(function()
+    SpiralMenuFrame.Visible = not SpiralMenuFrame.Visible
+    if SpiralMenuFrame.Visible then
+        OpenSpiralButton.Text = "Закрыть меню Спирали"
+        OpenSpiralButton.BackgroundColor3 = Color3.fromRGB(215, 50, 50)
+    else
+        OpenSpiralButton.Text = "Открыть меню Спирали"
+        OpenSpiralButton.BackgroundColor3 = Color3.fromRGB(0, 120, 215)
+    end
 end)
 
-local ampLevels = {1, 2, 5, 10, 15, 20, 25, 30, 35, 40}
-local currentAmpIdx = 1
-WobbleAmpBtn.MouseButton1Click:Connect(function()
-    if ButtonsLocked then return end
-    currentAmpIdx = (currentAmpIdx % #ampLevels) + 1
-    CharWobbleAmplitude = ampLevels[currentAmpIdx]
-    WobbleAmpBtn.Text = "Wobble Amp\nx" .. CharWobbleAmplitude
+SpeedTextBox.FocusLost:Connect(function(enterPressed)
+    local input = SpeedTextBox.Text
+    local numericValue = tonumber(input)
+    if numericValue then
+        spiralSpeed = numericValue
+        StatusLabel.Text = "Текущая скорость: " .. spiralSpeed
+        StatusLabel.TextColor3 = Color3.fromRGB(0, 255, 0)
+        task.delay(1, function()
+            StatusLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
+        end)
+    else
+        SpeedTextBox.Text = tostring(spiralSpeed)
+        StatusLabel.Text = "Ошибка! Введите число."
+        StatusLabel.TextColor3 = Color3.fromRGB(255, 50, 50)
+    end
 end)
+----------------------------------------------------------------
 
 local EmoteContainer = Instance.new("Frame", ScreenGui)
 EmoteContainer.Size = UDim2.new(0, 160, 0, 40)
@@ -309,16 +350,14 @@ for i, data in ipairs(EmoteData) do
     local eBtn = createModernBtn(data[1], UDim2.new(0, (i-1)*40, 0, 0), UDim2.new(0, 38, 0, 38))
     eBtn.Parent = EmoteContainer
     eBtn.MouseButton1Click:Connect(function()
-        if ButtonsLocked then return end
         local Char = Player.Character
         local Hum = Char and Char:FindFirstChildOfClass("Humanoid")
-        local animator = Hum and (Hum:FindFirstChildOfClass("Animator") or Hum:WaitForChild("Animator", 2))
-        if animator then
+        if Hum then
             stopCurrentEmote()
             if Flying then StopFlying() end 
             local anim = Instance.new("Animation")
             anim.AnimationId = data[2]
-            activeEmoteTrack = animator:LoadAnimation(anim)
+            activeEmoteTrack = Hum:LoadAnimation(anim)
             activeEmoteTrack.Priority = Enum.AnimationPriority.Action
             activeEmoteTrack:Play(0.2)
         end
@@ -337,9 +376,7 @@ for i, data in ipairs(SpeechData) do
     local sBtn = createModernBtn(data[1], UDim2.new(0, col * 55, 0, row * 42), UDim2.new(0, 52, 0, 38))
     sBtn.Parent = SpeechContainer
     sBtn.MouseButton1Click:Connect(function() 
-        if ButtonsLocked then return end
         sendToChat(data[2]) 
-        
         local Char = Player.Character
         local Head = Char and Char:FindFirstChild("Head")
         if Head then
@@ -349,21 +386,20 @@ for i, data in ipairs(SpeechData) do
                 sound.Volume = 1
                 sound.Parent = Head
                 sound:Play()
-                game:GetService("Debris"):AddItem(sound, 10) 
+                game:GetService("Debris"):AddItem(sound, 10)
             elseif data[1] == "YUMMERS" then
                 local sound = Instance.new("Sound")
                 sound.SoundId = SOUND_YUMMERS
                 sound.Volume = 1
                 sound.Parent = Head
                 sound:Play()
-                game:GetService("Debris"):AddItem(sound, 5) 
+                game:GetService("Debris"):AddItem(sound, 5)
             end
         end
     end)
 end
 
 SettingsBtn.MouseButton1Click:Connect(function()
-    if ButtonsLocked then return end
     local targetVisibility = not LookBtn.Visible
     WobbleMenuBtn.Visible = targetVisibility
     LookBtn.Visible = targetVisibility
@@ -371,15 +407,21 @@ SettingsBtn.MouseButton1Click:Connect(function()
     EmoteMenuBtn.Visible = targetVisibility
     SpeechMenuBtn.Visible = targetVisibility
     ShiftLockBtn.Visible = targetVisibility
-    CustomAnimBtn.Visible = targetVisibility
+    SpiralRadiusBtn.Visible = targetVisibility
+    
+    -- Синхронизация отображения фрейма настроек спирали
+    SettingsFrame.Visible = targetVisibility
+    
     if not targetVisibility then 
         WobblePanel.Visible = false
         EmoteContainer.Visible = false 
         SpeechContainer.Visible = false 
+        SpiralMenuFrame.Visible = false
+        OpenSpiralButton.Text = "Открыть меню Спирали"
+        OpenSpiralButton.BackgroundColor3 = Color3.fromRGB(0, 120, 215)
     end
 end)
 
--- Единственная кнопка, которая ВСЕГДА должна работать, чтобы снять блок
 LockBtn.MouseButton1Click:Connect(function()
     ButtonsLocked = not ButtonsLocked
     LockBtn.Text = ButtonsLocked and "Lock\nON" or "Lock\nOFF"
@@ -387,46 +429,49 @@ LockBtn.MouseButton1Click:Connect(function()
 end)
 
 LookBtn.MouseButton1Click:Connect(function()
-    if ButtonsLocked then return end
     LookWithCamera = not LookWithCamera
     LookBtn.Text = LookWithCamera and "Camera-Lock\nON" or "Camera-Lock\nOFF"
     LookBtn.BackgroundColor3 = LookWithCamera and Color3.fromRGB(20, 20, 20) or Color3.fromRGB(150, 0, 0)
 end)
 
 ShiftLockBtn.MouseButton1Click:Connect(function()
-    if ButtonsLocked then return end
     ShiftLockActive = not ShiftLockActive
     ShiftLockBtn.Text = ShiftLockActive and "Shift-Lock\nON" or "Shift-Lock\nOFF"
     ShiftLockBtn.BackgroundColor3 = ShiftLockActive and Color3.fromRGB(0, 150, 0) or Color3.fromRGB(20, 20, 20)
 end)
 
-CustomAnimBtn.MouseButton1Click:Connect(function()
-    if ButtonsLocked then return end
-    CustomAnimEnabled = not CustomAnimEnabled
-    CustomAnimBtn.Text = CustomAnimEnabled and "G-Anim\nON" or "G-Anim\nOFF"
-    CustomAnimBtn.BackgroundColor3 = CustomAnimEnabled and Color3.fromRGB(20, 20, 20) or Color3.fromRGB(150, 0, 0)
-end)
-
 WobbleMenuBtn.MouseButton1Click:Connect(function()
-    if ButtonsLocked then return end
     WobblePanel.Visible = not WobblePanel.Visible
     if WobblePanel.Visible then EmoteContainer.Visible = false; SpeechContainer.Visible = false end
 end)
 
 WobbleToggleBtn.MouseButton1Click:Connect(function()
-    if ButtonsLocked then return end
     CharWobbleEnabled = not CharWobbleEnabled
     WobbleToggleBtn.Text = CharWobbleEnabled and "Wobble\nON" or "Wobble\nOFF"
     WobbleToggleBtn.BackgroundColor3 = CharWobbleEnabled and Color3.fromRGB(20, 20, 20) or Color3.fromRGB(150, 0, 0)
 end)
 
+local speedLevels = {1, 1.5, 2, 3, 5, 8, 0.5}
+local currentSpdIdx = 1
+WobbleSpdBtn.MouseButton1Click:Connect(function()
+    currentSpdIdx = (currentSpdIdx % #speedLevels) + 1
+    CharWobbleSpeed = speedLevels[currentSpdIdx]
+    WobbleSpdBtn.Text = "Wobble Spd\nx" .. CharWobbleSpeed
+end)
+
+local ampLevels = {1, 2, 3, 5, 8, 15, 0.5}
+local currentAmpIdx = 1
+WobbleAmpBtn.MouseButton1Click:Connect(function()
+    currentAmpIdx = (currentAmpIdx % #ampLevels) + 1
+    CharWobbleAmplitude = ampLevels[currentAmpIdx]
+    WobbleAmpBtn.Text = "Wobble Amp\nx" .. CharWobbleAmplitude
+end)
+
 EmoteMenuBtn.MouseButton1Click:Connect(function() 
-    if ButtonsLocked then return end
     EmoteContainer.Visible = not EmoteContainer.Visible 
     if EmoteContainer.Visible then WobblePanel.Visible = false; SpeechContainer.Visible = false end
 end)
 SpeechMenuBtn.MouseButton1Click:Connect(function() 
-    if ButtonsLocked then return end
     SpeechContainer.Visible = not SpeechContainer.Visible 
     if SpeechContainer.Visible then WobblePanel.Visible = false; EmoteContainer.Visible = false end
 end)
@@ -534,7 +579,6 @@ local function removeLasers()
     if faceLight then faceLight:Destroy() faceLight = nil end
     if laserAnimTrack then laserAnimTrack:Stop(0.45); laserAnimTrack = nil end
     if introAnimTrack then introAnimTrack:Stop(0.45); introAnimTrack = nil end
-    
     if laserSound then
         laserSound:Stop()
         laserSound:Destroy()
@@ -559,7 +603,6 @@ local function toggleLasers()
     LasersActive = not LasersActive
     local Char = Player.Character
     local Hum = Char and Char:FindFirstChildOfClass("Humanoid")
-    local animator = Hum and (Hum:FindFirstChildOfClass("Animator") or Hum:WaitForChild("Animator", 2))
     
     removeLasers() 
     
@@ -571,7 +614,6 @@ local function toggleLasers()
         task.spawn(function()
             task.wait(0.5)
             if laserSession ~= currentSession or not LasersActive then return end
-            
             local Head = Char and Char:FindFirstChild("Head")
             if Head then
                 laserSound = Instance.new("Sound")
@@ -584,12 +626,11 @@ local function toggleLasers()
         end)
         
         task.spawn(function()
-            if animator then
+            if Hum then
                 local introAnim = Instance.new("Animation")
                 introAnim.AnimationId = introAnimId
-                introAnimTrack = animator:LoadAnimation(introAnim)
+                introAnimTrack = Hum:LoadAnimation(introAnim)
                 introAnimTrack.Priority = Enum.AnimationPriority.Action4
-                
                 introAnimTrack:Play(0.6)
                 
                 local elapsed = 0
@@ -610,7 +651,6 @@ local function toggleLasers()
                 
                 local startCut = introAnimTrack.Length * 0.3
                 local durationCut = introAnimTrack.Length * 0.15
-                
                 introAnimTrack.TimePosition = startCut
                 task.wait(durationCut)
                 
@@ -621,10 +661,9 @@ local function toggleLasers()
                 
                 local mainAnim = Instance.new("Animation")
                 mainAnim.AnimationId = laserAnimId
-                laserAnimTrack = animator:LoadAnimation(mainAnim)
+                laserAnimTrack = Hum:LoadAnimation(mainAnim)
                 laserAnimTrack.Priority = Enum.AnimationPriority.Action4
                 laserAnimTrack:Play(0.45)
-                
                 introAnimTrack:Stop(0.45)
             end
             
@@ -656,7 +695,6 @@ local function toggleLasers()
                 
                 local headCFrame = CurrentHead.CFrame
                 local lookVector = CurrentHead.CFrame.LookVector
-                
                 if FlingingActive and flingOldHeadCFrame then
                     headCFrame = flingOldHeadCFrame
                     lookVector = flingOldHeadCFrame.LookVector
@@ -684,7 +722,6 @@ local function toggleLasers()
                 
                 local leftEye = (headCFrame * CFrame.new(-0.22, 0.15, -0.55)).Position
                 local rightEye = (headCFrame * CFrame.new(0.22, 0.15, -0.55)).Position
-                
                 local lDist = (hitPoint - leftEye).Magnitude
                 leftLaserPart.Size = Vector3.new(0.18, 0.18, lDist)
                 leftLaserPart.CFrame = CFrame.lookAt(leftEye, hitPoint) * CFrame.new(0, 0, -lDist/2)
@@ -702,10 +739,26 @@ local function toggleLasers()
     end
 end
 
-LaserBtn.MouseButton1Click:Connect(function()
-    if ButtonsLocked then return end
-    toggleLasers()
-end)
+LaserBtn.MouseButton1Click:Connect(toggleLasers)
+
+local bv, bg, activeTrack, boostFlyTrack
+local idleTracks, moveTracks = {}, {}
+
+local function loadTracks(Hum)
+    idleTracks, moveTracks = {}, {}
+    for i, id in ipairs(IdleAnims) do
+        local anim = Instance.new("Animation")
+        anim.AnimationId = id
+        local success, track = pcall(function() return Hum:LoadAnimation(anim) end)
+        if success and track then track.Priority = Enum.AnimationPriority.Action; track.Looped = true; idleTracks[i] = track end
+    end
+    for i, id in ipairs(MoveAnims) do
+        local anim = Instance.new("Animation")
+        anim.AnimationId = id
+        local success, track = pcall(function() return Hum:LoadAnimation(anim) end)
+        if success and track then track.Priority = Enum.AnimationPriority.Action; track.Looped = true; moveTracks[i] = track end
+    end
+end
 
 function StopFlying()
     if WobblePanel.Visible then WobblePanel.Visible = false end
@@ -734,11 +787,10 @@ function StopFlying()
             Hum:ChangeState(Enum.HumanoidStateType.GettingUp)
         end
     end
-    
     if activeTrack then activeTrack:Stop(0.6) activeTrack = nil end 
     if boostFlyTrack then boostFlyTrack:Stop(0.3) boostFlyTrack = nil end
     if bv then bv:Destroy() bv = nil end
-    if bg then bg:Destroy() bg = nil end
+    if bg then bg:Destroy() end
     if wasMovingInFlight then
         wasMovingInFlight = false
         Camera.CameraType = savedCameraType
@@ -763,17 +815,15 @@ function StartFlying()
     Root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
     currentVelocity = Vector3.new(0, 0, 0)
     
-    bv = Instance.new("BodyVelocity")
+    bv = Instance.new("BodyVelocity", Root)
     bv.MaxForce = Vector3.new(1e6, 1e6, 1e6)
     bv.Velocity = Vector3.new(0, 0, 0)
-    bv.Parent = Root
     
-    bg = Instance.new("BodyGyro")
+    bg = Instance.new("BodyGyro", Root)
     bg.MaxTorque = Vector3.new(1e6, 1e6, 1e6) 
     bg.P = 1000000 
     bg.D = 9000   
     bg.CFrame = Root.CFrame
-    bg.Parent = Root
     
     local raycastParams = RaycastParams.new()
     raycastParams.FilterDescendantsInstances = {Char}
@@ -784,7 +834,7 @@ function StartFlying()
     local currentBank = 0
 
     task.spawn(function()
-        while Flying and Root and Root.Parent and bg and bv do
+        while Flying and Root and Root.Parent do
             local currentHum = Char:FindFirstChildOfClass("Humanoid")
             if not currentHum then break end
             
@@ -795,7 +845,6 @@ function StartFlying()
                 else
                     local moveDir = currentHum.MoveDirection
                     local isMoving = moveDir.Magnitude > 0.05 or UpValue ~= 0 or DownValue ~= 0
-                    
                     if not isMoving and BoostActive then
                         BoostActive = false
                         BoostBtn.Text = "Boost\nOFF"
@@ -816,7 +865,6 @@ function StartFlying()
                         savedIdlePos = nil 
                         wasMovingLastFrame = true
                         targetVelocity = moveVel
-                        
                         if bv then
                             bv.Velocity = bv.Velocity:Lerp(targetVelocity, 0.08)
                             currentVelocity = bv.Velocity
@@ -827,20 +875,15 @@ function StartFlying()
                             Root.AssemblyLinearVelocity = Vector3.zero
                             if bv then bv.Velocity = Vector3.zero end
                         end
-                        if not savedIdlePos then
-                            savedIdlePos = Root.Position 
-                        end
-                        
+                        if not savedIdlePos then savedIdlePos = Root.Position end
                         if CharWobbleEnabled and savedIdlePos then
                             local t = os.clock() * 0.7 * CharWobbleSpeed
                             local nX = math.noise(t, 14.23, 5.12) * 2.5 * CharWobbleAmplitude
                             local nY = math.noise(7.41, t, 19.85) * 1.8 * CharWobbleAmplitude
                             local nZ = math.noise(23.11, 11.45, t) * 2.5 * CharWobbleAmplitude
-                            
                             local targetPos = savedIdlePos + Vector3.new(nX, nY, nZ)
                             targetVelocity = (targetPos - Root.Position) * 4.5
                         end
-                        
                         if bv then
                             bv.Velocity = targetVelocity
                             currentVelocity = targetVelocity
@@ -849,17 +892,13 @@ function StartFlying()
                     
                     local isMovingAnim = moveDir.Magnitude > 0.05
                     local targetTrack
-                    
                     if BoostActive and isMovingAnim then
                         if not boostFlyTrack or boostFlyTrack.Animation.AnimationId ~= "rbxassetid://131114687716793" then
-                            local animator = currentHum:FindFirstChildOfClass("Animator")
-                            if animator then
-                                local anim = Instance.new("Animation")
-                                anim.AnimationId = "rbxassetid://131114687716793"
-                                boostFlyTrack = animator:LoadAnimation(anim)
-                                boostFlyTrack.Priority = Enum.AnimationPriority.Action4
-                                boostFlyTrack.Looped = true
-                            end
+                            local anim = Instance.new("Animation")
+                            anim.AnimationId = "rbxassetid://131114687716793"
+                            boostFlyTrack = currentHum:LoadAnimation(anim)
+                            boostFlyTrack.Priority = Enum.AnimationPriority.Action4
+                            boostFlyTrack.Looped = true
                         end
                         targetTrack = boostFlyTrack
                     else
@@ -888,30 +927,22 @@ function StartFlying()
                                 StopFlying() 
                                 Root.AssemblyLinearVelocity = Vector3.zero
                                 Root.AssemblyAngularVelocity = Vector3.zero
-                                
                                 local _, yRotation, _ = Root.CFrame:ToEulerAnglesYXZ()
                                 local targetCFrame = CFrame.new(hitPos + Vector3.new(0, LandingHeightOffset, 0)) * CFrame.Angles(0, yRotation, 0)
-                                
                                 local landTween = TweenService:Create(Root, TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {CFrame = targetCFrame})
                                 local landAnimInstance = Instance.new("Animation")
                                 landAnimInstance.AnimationId = LandingAnim
-                                
-                                local animator = currentHum:FindFirstChildOfClass("Animator")
-                                local landTrack
-                                if animator then
-                                    local success, res = pcall(function() return animator:LoadAnimation(landAnimInstance) end)
-                                    if success then landTrack = res end
-                                end
-                                
-                                if landTrack then
+                                local success, landTrack = pcall(function() return currentHum:LoadAnimation(landAnimInstance) end)
+                                if success and landTrack then
                                     landTrack.Priority = Enum.AnimationPriority.Action4
                                     landTrack:Play(0.1) 
                                 end
                                 landTween:Play()
                                 landTween.Completed:Wait() 
-                                Root.Anchored = true task.wait(1.5) Root.Anchored = false
+                                Root.Anchored = true 
+                                task.wait(1.5) 
+                                Root.Anchored = false
                                 if landTrack then landTrack:Stop(0.5) end
-                                
                                 local uprightCFrame = CFrame.new(Root.Position) * CFrame.Angles(0, yRotation, 0)
                                 local standTween = TweenService:Create(Root, TweenInfo.new(0.45, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {CFrame = uprightCFrame})
                                 standTween:Play()
@@ -923,7 +954,7 @@ function StartFlying()
                         end
                     end
                     
-                    if isMoving and bg then
+                    if isMoving then
                         if not wasMovingInFlight then wasMovingInFlight = true; savedCameraType = Camera.CameraType; Camera.CameraType = Enum.CameraType.Custom end
                         if moveVel.Magnitude > 0.01 then
                             local lookDir
@@ -939,16 +970,14 @@ function StartFlying()
                                     if lookDir.Magnitude < 0.01 then lookDir = Root.CFrame.LookVector end
                                 end
                             end
-
                             local relativeMove = Camera.CFrame:VectorToObjectSpace(moveDir)
                             local targetBank = 0
                             if moveDir.Magnitude > 0.05 then targetBank = -relativeMove.X * math.rad(25) end
                             currentBank = currentBank + (targetBank - currentBank) * 0.1
-
                             local targetRotation = CFrame.lookAt(Root.Position, Root.Position + lookDir, Vector3.new(0, 1, 0)) * CFrame.Angles(0, 0, currentBank)
                             bg.CFrame = bg.CFrame:Lerp(targetRotation, 0.15) 
                         end
-                    elseif bg then
+                    else
                         currentBank = currentBank + (0 - currentBank) * 0.1
                         if wasMovingInFlight then wasMovingInFlight = false; Camera.CameraType = savedCameraType end
                         if ShiftLockActive or LookWithCamera then
@@ -975,7 +1004,6 @@ function StartSpeedFlying()
     local Root = Char.HumanoidRootPart
     local Hum = Char:FindFirstChildOfClass("Humanoid")
     local Animator = Hum:FindFirstChildOfClass("Animator") or Hum:WaitForChild("Animator", 2)
-    if not Animator then return end
     
     stopCurrentEmote()
     if activeTrack then activeTrack:Stop() activeTrack = nil end
@@ -999,7 +1027,6 @@ function StartSpeedFlying()
         Hum.PlatformStand = true 
         loadTracks(Hum)
     end
-    
     Root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
     
     bv = Instance.new("BodyVelocity")
@@ -1016,9 +1043,7 @@ function StartSpeedFlying()
 
     local emoteAnim = Instance.new("Animation")
     emoteAnim.AnimationId = EMOTE_ID
-    local success, emoteTrack = pcall(function() return Animator:LoadAnimation(emoteAnim) end)
-    if not success or not emoteTrack then return end
-    
+    local emoteTrack = Animator:LoadAnimation(emoteAnim)
     emoteTrack.Priority = Enum.AnimationPriority.Action4
     emoteTrack:Play(0.5) 
     
@@ -1029,31 +1054,26 @@ function StartSpeedFlying()
     end
     task.wait(0.05)
     if not Flying then return end
-    
     emoteTrack.TimePosition = START_TIME 
     task.wait(DURATION)
     if not Flying or not Root.Parent or not Hum then return end
-    
     emoteTrack:AdjustSpeed(0) 
     
     local flyAnim = Instance.new("Animation")
     flyAnim.AnimationId = FLY_ANIM_ID
-    local success2, flyTrack = pcall(function() return Animator:LoadAnimation(flyAnim) end)
+    local flyTrack = Animator:LoadAnimation(flyAnim)
+    flyTrack.Priority = Enum.AnimationPriority.Action
+    flyTrack.Looped = true
     
-    if success2 and flyTrack then
-        flyTrack.Priority = Enum.AnimationPriority.Action
-        flyTrack.Looped = true
-        flyTrack:Play(FADE_TIME)
-        emoteTrack:Stop(FADE_TIME)
-        activeTrack = flyTrack
-        activeTrack:AdjustSpeed(moveAnimSpeed)
-    end
+    flyTrack:Play(FADE_TIME)
+    emoteTrack:Stop(FADE_TIME)
+    activeTrack = flyTrack
+    activeTrack:AdjustSpeed(moveAnimSpeed)
     
     local startSpeed = FLY_SPEED
     if BoostActive then startSpeed = startSpeed * 4 end 
     currentVelocity = (Root.CFrame.LookVector * startSpeed) + Vector3.new(0, UPWARD_SPEED, 0)
     bv.Velocity = currentVelocity
-    
     task.wait(0.1)
     if emoteTrack then emoteTrack:Destroy() end
     
@@ -1066,7 +1086,7 @@ function StartSpeedFlying()
     local currentBank = 0
 
     task.spawn(function()
-        while Flying and Root and Root.Parent and bg and bv do
+        while Flying and Root and Root.Parent do
             local currentHum = Char:FindFirstChildOfClass("Humanoid")
             if not currentHum then break end
             
@@ -1077,13 +1097,11 @@ function StartSpeedFlying()
                 else
                     local moveDir = currentHum.MoveDirection
                     local isMoving = moveDir.Magnitude > 0.05 or UpValue ~= 0 or DownValue ~= 0
-                    
                     if os.clock() - flightStartTime > (DURATION + DASH_DURATION) and not isMoving and BoostActive then
                         BoostActive = false
                         BoostBtn.Text = "Boost\nOFF"
                         BoostBtn.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
                     end
-                    
                     local speed = SpeedTable[SpeedLevel] or 60
                     if BoostActive then speed = speed * 4 end 
                     
@@ -1095,7 +1113,6 @@ function StartSpeedFlying()
                     
                     if os.clock() - flightStartTime > (DURATION + DASH_DURATION) then
                         local targetVelocity = Vector3.new(0, 0, 0)
-                        
                         if isMoving then
                             savedIdlePos = nil
                             wasMovingLastFrame = true
@@ -1111,12 +1128,10 @@ function StartSpeedFlying()
                                 if bv then bv.Velocity = Vector3.zero end
                             end
                             if not savedIdlePos then savedIdlePos = Root.Position end
-                            
                             if CharWobbleEnabled and savedIdlePos then
                                 local t = os.clock() * 0.7 * CharWobbleSpeed
                                 local nX = math.noise(t, 14.23, 5.12) * 2.5 * CharWobbleAmplitude
                                 local nY = math.noise(7.41, t, 19.85) * 1.8 * CharWobbleAmplitude
-                                
                                 local targetPos = savedIdlePos + Vector3.new(nX, nY, math.noise(23.11, 11.45, t) * 2.5 * CharWobbleAmplitude)
                                 targetVelocity = (targetPos - Root.Position) * 4.5
                             end
@@ -1125,26 +1140,20 @@ function StartSpeedFlying()
                                 currentVelocity = targetVelocity
                             end
                         end
-
                         local isMovingAnim = moveDir.Magnitude > 0.05
                         local targetTrack
-                        
                         if BoostActive and isMovingAnim then
                             if not boostFlyTrack or boostFlyTrack.Animation.AnimationId ~= "rbxassetid://131114687716793" then
-                                local animator = currentHum:FindFirstChildOfClass("Animator")
-                                if animator then
-                                    local anim = Instance.new("Animation")
-                                    anim.AnimationId = "rbxassetid://131114687716793"
-                                    boostFlyTrack = animator:LoadAnimation(anim)
-                                    boostFlyTrack.Priority = Enum.AnimationPriority.Action4
-                                    boostFlyTrack.Looped = true
-                                end
+                                local anim = Instance.new("Animation")
+                                anim.AnimationId = "rbxassetid://131114687716793"
+                                boostFlyTrack = currentHum:LoadAnimation(anim)
+                                boostFlyTrack.Priority = Enum.AnimationPriority.Action4
+                                boostFlyTrack.Looped = true
                             end
                             targetTrack = boostFlyTrack
                         else
                             targetTrack = isMovingAnim and moveTracks[currentMoveIdx] or idleTracks[currentIdleIdx]
                         end
-                        
                         if targetTrack and targetTrack ~= activeTrack and Flying then
                             local fade = isMovingAnim and moveFadeTime or idleFadeTime
                             if activeTrack then activeTrack:Stop(fade) end
@@ -1153,7 +1162,7 @@ function StartSpeedFlying()
                             if targetTrack == boostFlyTrack then
                                 activeTrack:AdjustSpeed(1.2)
                             else
-                                activeTrack:AdjustSpeed(isMovingAnim and moveAnimSpeed or idleAnimSpeed)
+                                activeTrack:AdjustSpeed(isMovingAnim and moveAnimSpeed or idleFadeTime)
                             end
                         end
                     else
@@ -1182,29 +1191,22 @@ function StartSpeedFlying()
                                 StopFlying() 
                                 Root.AssemblyLinearVelocity = Vector3.zero
                                 Root.AssemblyAngularVelocity = Vector3.zero
-                                
                                 local _, yRotation, _ = Root.CFrame:ToEulerAnglesYXZ()
                                 local targetCFrame = CFrame.new(hitPos + Vector3.new(0, LandingHeightOffset, 0)) * CFrame.Angles(0, yRotation, 0)
-                                
                                 local landTween = TweenService:Create(Root, TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {CFrame = targetCFrame})
                                 local landAnimInstance = Instance.new("Animation")
                                 landAnimInstance.AnimationId = LandingAnim
-                                
-                                local animator = currentHum:FindFirstChildOfClass("Animator")
-                                local landTrack = nil
-                                if animator then
-                                    local successL, resL = pcall(function() return animator:LoadAnimation(landAnimInstance) end)
-                                    if successL then landTrack = resL end
-                                end
-                                if landTrack then
+                                local success, landTrack = pcall(function() return currentHum:LoadAnimation(landAnimInstance) end)
+                                if success and landTrack then
                                     landTrack.Priority = Enum.AnimationPriority.Action4
                                     landTrack:Play(0.1) 
                                 end
                                 landTween:Play()
                                 landTween.Completed:Wait() 
-                                Root.Anchored = true task.wait(1.5) Root.Anchored = false
+                                Root.Anchored = true 
+                                task.wait(1.5) 
+                                Root.Anchored = false
                                 if landTrack then landTrack:Stop(0.5) end
-                                
                                 local uprightCFrame = CFrame.new(Root.Position) * CFrame.Angles(0, yRotation, 0)
                                 local standTween = TweenService:Create(Root, TweenInfo.new(0.45, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {CFrame = uprightCFrame})
                                 standTween:Play()
@@ -1218,7 +1220,7 @@ function StartSpeedFlying()
                     
                     if os.clock() - flightStartTime > (DURATION + DASH_DURATION) then
                         local isMoving = moveDir.Magnitude > 0.05
-                        if isMoving and bg then
+                        if isMoving then
                             if not wasMovingInFlight then wasMovingInFlight = true; savedCameraType = Camera.CameraType; Camera.CameraType = Enum.CameraType.Custom end
                             if moveVel.Magnitude > 0.01 then
                                 local lookDir
@@ -1234,16 +1236,14 @@ function StartSpeedFlying()
                                         if lookDir.Magnitude < 0.01 then lookDir = Root.CFrame.LookVector end
                                     end
                                 end
-
                                 local relativeMove = Camera.CFrame:VectorToObjectSpace(moveDir)
                                 local targetBank = 0
                                 if moveDir.Magnitude > 0.05 then targetBank = -relativeMove.X * math.rad(25) end
                                 currentBank = currentBank + (targetBank - currentBank) * 0.1
-
                                 local targetRotation = CFrame.lookAt(Root.Position, Root.Position + lookDir, Vector3.new(0, 1, 0)) * CFrame.Angles(0, 0, currentBank)
                                 bg.CFrame = bg.CFrame:Lerp(targetRotation, 0.15)
                             end
-                        elseif bg then
+                        else
                             currentBank = currentBank + (0 - currentBank) * 0.1
                             if wasMovingInFlight then wasMovingInFlight = false; Camera.CameraType = savedCameraType end
                             if ShiftLockActive or LookWithCamera then
@@ -1257,9 +1257,9 @@ function StartSpeedFlying()
                                 bg.CFrame = bg.CFrame:Lerp(CFrame.new(Root.Position) * CFrame.Angles(0, yRotation, 0) * CFrame.Angles(0, 0, currentBank), 0.12)
                             end
                         end
-                    elseif bg then
+                    else
                         currentBank = currentBank + (0 - currentBank) * 0.1
-                        if ShiftLockActive or LookWithCamera then
+                        if (ShiftLockActive or LookWithCamera) and bg then
                             local camLook = Camera.CFrame.LookVector
                             if camLook.Magnitude > 0.01 then
                                 local targetRotation = CFrame.lookAt(Root.Position, Root.Position + camLook, Vector3.new(0, 1, 0)) * CFrame.Angles(0, 0, currentBank)
@@ -1275,36 +1275,26 @@ function StartSpeedFlying()
 end
 
 BoostBtn.MouseButton1Click:Connect(function()
-    if ButtonsLocked then return end
     if not Flying or IsBoostingCharging or BoostActive then return end 
-    
     IsBoostingCharging = true
     BoostBtn.Text = "Boost\nCHRG"
     BoostBtn.BackgroundColor3 = Color3.fromRGB(200, 100, 0)
     
     local Char = Player.Character
     local Hum = Char and Char:FindFirstChildOfClass("Humanoid")
-    local Animator = Hum and (Hum:FindFirstChildOfClass("Animator") or Hum:WaitForChild("Animator", 2))
-    
-    if Animator then
-        for _, track in pairs(Animator:GetPlayingAnimationTracks()) do track:Stop(0.1) end
+    if Hum then
+        for _, track in pairs(Hum:GetPlayingAnimationTracks()) do track:Stop(0.1) end
         activeTrack = nil
-        
         local anim = Instance.new("Animation")
         anim.AnimationId = "rbxassetid://127528880902667"
-        local success, track = pcall(function() return Animator:LoadAnimation(anim) end)
-        if success and track then
-            track.Priority = Enum.AnimationPriority.Action4
-            track:Play()
-            task.wait(0.8)
-            track:Stop(0.1)
-        else
-            task.wait(0.8)
-        end
+        local track = Hum:LoadAnimation(anim)
+        track.Priority = Enum.AnimationPriority.Action4
+        track:Play()
+        task.wait(0.8)
+        track:Stop(0.1)
     else
         task.wait(0.8)
     end
-    
     if not Flying then 
         IsBoostingCharging = false
         BoostActive = false
@@ -1312,7 +1302,6 @@ BoostBtn.MouseButton1Click:Connect(function()
         BoostBtn.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
         return 
     end
-    
     IsBoostingCharging = false
     BoostActive = true
     BoostBtn.Text = "Boost\nON"
@@ -1325,164 +1314,203 @@ BoostBtn.MouseButton1Click:Connect(function()
     end
 end)
 
-ToggleBtn.MouseButton1Click:Connect(function() if ButtonsLocked then return end if Flying then StopFlying() else StartFlying() end end)
-SpeedFlyBtn.MouseButton1Click:Connect(function() if ButtonsLocked then return end if Flying then StopFlying() else StartSpeedFlying() end end)
-CrashBtn.MouseButton1Click:Connect(function() if ButtonsLocked then return end CrashEnabled = not CrashEnabled; CrashBtn.Text = CrashEnabled and "Ground\nON" or "Ground\nOFF" end)
-PoseBtn.MouseButton1Click:Connect(function() if ButtonsLocked then return end currentIdleIdx = (currentIdleIdx % #IdleAnims) + 1 PoseBtn.Text = "Idle\nV" .. currentIdleIdx end)
-AnimBtn.MouseButton1Click:Connect(function() if ButtonsLocked then return end currentMoveIdx = (currentMoveIdx % 3) + 1; AnimBtn.Text = "Move\nV" .. currentMoveIdx end)
-SpeedBtn.MouseButton1Click:Connect(function() if ButtonsLocked then return end SpeedLevel = (SpeedLevel % 5) + 1; SpeedBtn.Text = "Speed\nLvl " .. SpeedLevel end)
-UpBtn.MouseButton1Down:Connect(function() if ButtonsLocked then return end UpValue = 1 end)
-UpBtn.MouseButton1Up:Connect(function() if ButtonsLocked then return end UpValue = 0 end)
-DownBtn.MouseButton1Down:Connect(function() if ButtonsLocked then return end DownValue = 1 end)
-DownBtn.MouseButton1Up:Connect(function() if ButtonsLocked then return end DownValue = 0 end)
+ToggleBtn.MouseButton1Click:Connect(function() if Flying then StopFlying() else StartFlying() end end)
+SpeedFlyBtn.MouseButton1Click:Connect(function() if Flying then StopFlying() else StartSpeedFlying() end end)
+CrashBtn.MouseButton1Click:Connect(function() CrashEnabled = not CrashEnabled; CrashBtn.Text = CrashEnabled and "Ground\nON" or "Ground\nOFF" end)
+
+PoseBtn.MouseButton1Click:Connect(function() 
+    currentIdleIdx = (currentIdleIdx % #IdleAnims) + 1 
+    PoseBtn.Text = "Idle\nV" .. currentIdleIdx 
+end)
+
+AnimBtn.MouseButton1Click:Connect(function() currentMoveIdx = (currentMoveIdx % 3) + 1; AnimBtn.Text = "Move\nV" .. currentMoveIdx end)
+SpeedBtn.MouseButton1Click:Connect(function() SpeedLevel = (SpeedLevel % 5) + 1; SpeedBtn.Text = "Speed\nLvl " .. SpeedLevel end)
+UpBtn.MouseButton1Down:Connect(function() UpValue = 1 end)
+UpBtn.MouseButton1Up:Connect(function() UpValue = 0 end)
+DownBtn.MouseButton1Down:Connect(function() DownValue = 1 end)
+DownBtn.MouseButton1Up:Connect(function() DownValue = 0 end)
 
 SuperJumpBtn.MouseButton1Click:Connect(function()
-    if ButtonsLocked then return end
-    if SuperJumping then return end
     if Flying then StopFlying() end
-    
-    SuperJumping = true 
     local Char = Player.Character
     local Root = Char and Char:FindFirstChild("HumanoidRootPart")
     local Hum = Char and Char:FindFirstChild("Humanoid")
-    local Animator = Hum and (Hum:FindFirstChildOfClass("Animator") or Hum:WaitForChild("Animator", 2))
-    
-    if Root and Animator then
+    if Root and Hum then
         local chargeAnim = Instance.new("Animation")
         chargeAnim.AnimationId = "rbxassetid://127610911773857"
-        local success1, chargeTrack = pcall(function() return Animator:LoadAnimation(chargeAnim) end)
-        if success1 and chargeTrack then
-            chargeTrack.Priority = Enum.AnimationPriority.Action3
-            chargeTrack:Play(0.3)
-        end
-        
+        local chargeTrack = Hum:LoadAnimation(chargeAnim)
+        chargeTrack.Priority = Enum.AnimationPriority.Action3
+        chargeTrack:Play(0.3)
         task.wait(0.8)
-        if chargeTrack then chargeTrack:Stop(0.1) end
+        chargeTrack:Stop(0.1)
         
         Hum.PlatformStand = true
         Hum.AutoRotate = false
-        
-        local jumpVelocity = Instance.new("BodyVelocity")
+        local jumpVelocity = Instance.new("BodyVelocity", Root)
         jumpVelocity.MaxForce = Vector3.new(1e6, 1e6, 1e6)
         jumpVelocity.Velocity = Vector3.new(Root.AssemblyLinearVelocity.X, 100, Root.AssemblyLinearVelocity.Z)
-        jumpVelocity.Parent = Root
-        
-        local jumpGyro = Instance.new("BodyGyro")
+        local jumpGyro = Instance.new("BodyGyro", Root)
         jumpGyro.MaxTorque = Vector3.new(1e6, 1e6, 1e6)
-        jumpGyro.Parent = Root
         
         local _, yRot, _ = Root.CFrame:ToEulerAnglesYXZ()
         jumpGyro.CFrame = CFrame.fromEulerAnglesYXZ(math.rad(90), yRot, 0)
-        
         local flyUpAnim = Instance.new("Animation")
         flyUpAnim.AnimationId = "rbxassetid://132105268936736"
-        local success2, flyUpTrack = pcall(function() return Animator:LoadAnimation(flyUpAnim) end)
-        if success2 and flyUpTrack then
-            flyUpTrack.Priority = Enum.AnimationPriority.Action3
-            flyUpTrack:Play(0.15)
-        end
+        local flyUpTrack = Hum:LoadAnimation(flyUpAnim)
+        flyUpTrack.Priority = Enum.AnimationPriority.Action3
+        flyUpTrack:Play(0.15)
         
         local originalFOV = Camera.FieldOfView
         TweenService:Create(Camera, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {FieldOfView = originalFOV + 12}):Play()
-        
         local jumpTween = TweenService:Create(jumpVelocity, TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
             Velocity = Vector3.new(Root.AssemblyLinearVelocity.X, 30, Root.AssemblyLinearVelocity.Z)
         })
         jumpTween:Play()
-        
         task.wait(0.55)
         
         TweenService:Create(Camera, TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {FieldOfView = originalFOV}):Play()
-        if flyUpTrack then flyUpTrack:Stop(0.3) end
-        
+        flyUpTrack:Stop(0.3)
         Root.AssemblyLinearVelocity = jumpVelocity.Velocity
         jumpVelocity:Destroy()
         jumpGyro:Destroy()
-        
         Hum.PlatformStand = false
-        SuperJumping = false 
         StartFlying() 
-    else
-        SuperJumping = false
     end
 end)
 
--- ===================================================================================--
---                          ЦИКЛ ОБРАБОТКИ (HEARTBEAT)                                --
--- ===================================================================================--
-RunService.Heartbeat:Connect(function(dt)
+SpiralRadiusBtn.MouseButton1Click:Connect(function()
+    SpiralRadiusIdx = (SpiralRadiusIdx % #SpiralRadiusLevels) + 1
+    SpiralRadius = SpiralRadiusLevels[SpiralRadiusIdx]
+    SpiralRadiusBtn.Text = "Spiral Rad\n" .. SpiralRadius
+end)
+
+SpiralBtn.MouseButton1Click:Connect(function()
+    SpiralActive = not SpiralActive
     local Char = Player.Character
-    if not Char then return end
+    local Root = Char and Char:FindFirstChild("HumanoidRootPart")
+    local Hum = Char and Char:FindFirstChildOfClass("Humanoid")
     
-    local RootPart = Char:FindFirstChild("HumanoidRootPart")
-    local Humanoid = Char:FindFirstChildOfClass("Humanoid")
-    if not RootPart or not Humanoid then return end
-    
-    -- 1. СИСТЕМА АНТИ-СДВИГА
-    if not FlingingActive and not IsBoostingCharging and not SuperJumping then
-        for _, part in ipairs(Char:GetChildren()) do
-            if part:IsA("BasePart") then
-                part.CustomPhysicalProperties = PhysicalProperties.new(100, 0.5, 1, 1, 1)
-            end
+    if SpiralActive then
+        SpiralBtn.Text = "Spiral\nON"
+        SpiralBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 0)
+        if not Root or not Hum then SpiralActive = false; return end
+        
+        local wasFlyingAtStart = Flying
+        if wasFlyingAtStart then
+            local anim = Instance.new("Animation")
+            anim.AnimationId = "rbxassetid://127528880902667"
+            local t = Hum:LoadAnimation(anim)
+            t.Priority = Enum.AnimationPriority.Action4
+            t:Play()
+            task.wait(0.8)
+            t:Stop()
+        else
+            local anim = Instance.new("Animation")
+            anim.AnimationId = "rbxassetid://132168338773523"
+            local t = Hum:LoadAnimation(anim)
+            t.Priority = Enum.AnimationPriority.Action4
+            t:Play()
+            task.wait(1.0)
+            t:Stop()
         end
         
-        if not Flying then
-            if Humanoid.MoveDirection.Magnitude < 0.05 then
-                RootPart.AssemblyLinearVelocity = Vector3.new(0, RootPart.AssemblyLinearVelocity.Y, 0)
-                RootPart.AssemblyAngularVelocity = Vector3.zero
+        if not SpiralActive then return end
+        
+        local centerPart = Instance.new("Part")
+        centerPart.Size = Vector3.new(1,1,1)
+        centerPart.Transparency = 1
+        centerPart.Anchored = true
+        centerPart.CanCollide = false
+        centerPart.Position = Root.Position
+        centerPart.Parent = workspace
+        
+        Camera.CameraSubject = centerPart
+        
+        local spiralAnim = Instance.new("Animation")
+        spiralAnim.AnimationId = "rbxassetid://131114687716793"
+        local spiralTrack = Hum:LoadAnimation(spiralAnim)
+        spiralTrack.Priority = Enum.AnimationPriority.Action4
+        spiralTrack.Looped = true
+        spiralTrack:Play()
+        
+        local angle = 0
+        local centerPos = Root.Position
+        local oldPlatformStand = Hum.PlatformStand
+        Hum.PlatformStand = true
+        
+        task.spawn(function()
+            local cloneTick = 0
+            while SpiralActive and Root and Root.Parent do
+                -- Модифицировано: Шаг изменения угла теперь использует переменную spiralSpeed
+                angle = angle + spiralSpeed
+                local posX = centerPos.X + math.sin(angle) * SpiralRadius
+                local posZ = centerPos.Z + math.cos(angle) * SpiralRadius
+                local targetPos = Vector3.new(posX, centerPos.Y, posZ)
+                
+                local tangentX = math.cos(angle)
+                local tangentZ = -math.sin(angle)
+                local lookDir = Vector3.new(tangentX, 0, tangentZ).Unit
+                
+                Root.CFrame = CFrame.lookAt(targetPos, targetPos + lookDir)
+                Root.AssemblyLinearVelocity = lookDir * 9999999
+                
+                cloneTick = cloneTick + 1
+                if cloneTick % 2 == 0 then
+                    task.spawn(function()
+                        Char.Archivable = true
+                        local clone = Char:Clone()
+                        Char.Archivable = false
+                        clone.Parent = workspace
+                        for _, p in ipairs(clone:GetDescendants()) do
+                            if p:IsA("BasePart") then
+                                p.Anchored = true
+                                p.CanCollide = false
+                                p.Material = Enum.Material.Neon
+                                TweenService:Create(p, TweenInfo.new(0.3), {Transparency = 1}):Play()
+                            elseif p:IsA("Script") or p:IsA("LocalScript") then
+                                p:Destroy()
+                            end
+                        end
+                        task.wait(0.3)
+                        clone:Destroy()
+                    end)
+                end
+                RunService.Heartbeat:Wait()
+            end
+            
+            if Root then
+                Root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+                Root.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+                Root.CFrame = CFrame.new(centerPos) * Root.CFrame.Rotation
+            end
+            
+            if spiralTrack then spiralTrack:Stop() end
+            Camera.CameraSubject = Hum
+            if centerPart then centerPart:Destroy() end
+            
+            if not wasFlyingAtStart and not Flying then
+                if Root then
+                    Root.AssemblyLinearVelocity = Vector3.zero
+                    Root.AssemblyAngularVelocity = Vector3.zero
+                end
+                local landAnimInstance = Instance.new("Animation")
+                landAnimInstance.AnimationId = LandingAnim
+                local landTrack = Hum:LoadAnimation(landAnimInstance)
+                landTrack.Priority = Enum.AnimationPriority.Action4
+                landTrack:Play(0.1)
+                
+                if Root then Root.Anchored = true end
+                task.wait(1.5)
+                if Root then Root.Anchored = false end
+                if landTrack then landTrack:Stop() end
+                Hum.PlatformStand = oldPlatformStand
             else
-                local horizontalVel = Vector3.new(RootPart.AssemblyLinearVelocity.X, 0, RootPart.AssemblyLinearVelocity.Z)
-                if horizontalVel.Magnitude > 75 then
-                    local walkVel = Humanoid.MoveDirection * Humanoid.WalkSpeed
-                    RootPart.AssemblyLinearVelocity = Vector3.new(walkVel.X, RootPart.AssemblyLinearVelocity.Y, walkVel.Z)
-                    RootPart.AssemblyAngularVelocity = Vector3.zero
-                end
+                Hum.PlatformStand = oldPlatformStand
+                if Flying and bv then bv.Velocity = Vector3.zero end
             end
-        else
-            if RootPart.AssemblyLinearVelocity.Magnitude > (SpeedTable[SpeedLevel] * 4 + 50) then
-                RootPart.AssemblyLinearVelocity = currentVelocity
-                RootPart.AssemblyAngularVelocity = Vector3.zero
-            end
-        end
-    end
-    
-    -- 2. СУСТАВНОЙ WOBBLE ЭФФЕКТ
-    local RootJoint = RootPart:FindFirstChild("RootJoint")
-    if CharWobbleEnabled and RootJoint and OriginalRootC0 and (Char == lastCharacter) then
-        WobbleTimeCounter = WobbleTimeCounter + (dt * 15 * CharWobbleSpeed)
-        
-        local wobbleX = math.sin(WobbleTimeCounter) * 0.05 * CharWobbleAmplitude
-        local wobbleZ = math.cos(WobbleTimeCounter * 0.8) * 0.04 * CharWobbleAmplitude
-        local wobbleY = math.abs(math.sin(WobbleTimeCounter * 0.5)) * 0.1 * CharWobbleAmplitude
-        
-        local offsetCFrame = CFrame.new(0, wobbleY, 0) * CFrame.Angles(wobbleX, 0, wobbleZ)
-        RootJoint.C0 = OriginalRootC0 * offsetCFrame
-    elseif RootJoint and OriginalRootC0 and (Char == lastCharacter) then
-        RootJoint.C0 = OriginalRootC0
-    end
-    
-    -- 3. АНИМАЦИЯ ХОДЬБЫ / БЕГА НА ЗЕМЛЕ
-    if not Flying and not SuperJumping and not FlingingActive and not activeEmoteTrack and CustomAnimEnabled then
-        if Humanoid.MoveDirection.Magnitude > 0.05 and Humanoid.FloorMaterial ~= Enum.Material.Air then
-            local desiredTrack = groundMoveTrack
-            if desiredTrack then
-                if currentGroundTrack ~= desiredTrack then
-                    if currentGroundTrack then currentGroundTrack:Stop(0.15) end
-                    currentGroundTrack = desiredTrack
-                    currentGroundTrack:Play(0.15)
-                end
-                currentGroundTrack:AdjustSpeed(moveAnimSpeed)
-            end
-        else
-            if currentGroundTrack then
-                currentGroundTrack:Stop(0.2)
-                currentGroundTrack = nil
-            end
-        end
+        end)
     else
-        if currentGroundTrack then
-            currentGroundTrack:Stop(0.1)
-            currentGroundTrack = nil
-        end
+        SpiralBtn.Text = "Spiral\nOFF"
+        SpiralBtn.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
     end
 end)
